@@ -28,6 +28,13 @@ class Bot(private val svc: AutoService) {
     @Volatile
     private var last: Screen? = null
 
+    private var offSince = 0L
+    private var noRecoverUntil = 0L
+    private var recoverFails = 0
+    private val popupWords = listOf("promocao", "halloween", "evento", "oferta")
+    // posicoes estimadas do X do anuncio (fracao da tela), medidas num print do MEmu
+    private val closeCands = listOf(Pair(0.784f, 0.248f), Pair(0.80f, 0.23f), Pair(0.77f, 0.265f))
+
     private val invRe = Regex("inv\\s*\\d+\\s*/\\s*\\d+")
 
     // ================= controle =================
@@ -127,9 +134,27 @@ class Bot(private val svc: AutoService) {
             cfg = s
             if (targetPkg.isNotEmpty() && svc.foregroundPkg != targetPkg) {
                 svc.setStatus("espera")
-                sleepc(2000)
+                if (offSince == 0L) offSince = clock()
+                if (s.autoReopen && clock() - offSince > 10000 && clock() >= noRecoverUntil) {
+                    if (recoverGame()) {
+                        recoverFails = 0
+                    } else {
+                        recoverFails++
+                        noRecoverUntil = clock() + 60000
+                        if (recoverFails >= 3) {
+                            svc.alarm()
+                            noRecoverUntil = clock() + 300000
+                            recoverFails = 0
+                            Logger.add("ALERTA: nao consegui reabrir o jogo (nova tentativa em 5 min)")
+                        }
+                    }
+                    offSince = 0L
+                } else {
+                    sleepc(2000)
+                }
                 continue
             }
+            offSince = 0L
             if (CaptureService.instance == null) {
                 svc.setStatus("sem captura")
                 sleepc(3000)
@@ -230,6 +255,69 @@ class Bot(private val svc: AutoService) {
             if (poll() > 0) sleepc(poll())
         }
         return v
+    }
+
+    // ================= recuperar o jogo =================
+
+    private fun hudVisible(): Boolean {
+        val bmp = CaptureService.instance?.capture() ?: return false
+        val sc = try {
+            OcrUtil.scanRegion(bmp, (bmp.width * 0.45f).toInt(), (bmp.height * 0.86f).toInt(), bmp.width, bmp.height, 2)
+        } finally {
+            bmp.recycle()
+        }
+        return percents(sc).size >= 3
+    }
+
+    private fun hasPopup(sc: Screen) = sc.lines.any { l -> popupWords.any { l.norm.contains(it) } }
+
+    /** Abre o jogo de novo, fecha o anuncio, toca em JOGAR e espera a tela do jogo (barras) aparecer. */
+    private fun recoverGame(): Boolean {
+        var pkg = targetPkg
+        if (pkg.isEmpty()) pkg = svc.findPkgByLabel("brasil roleplay")
+        if (pkg.isEmpty()) {
+            Logger.add("Nao achei o app Brasil Roleplay para reabrir")
+            return false
+        }
+        Logger.add("Jogo fora da tela: reabrindo $pkg")
+        svc.setStatus("reabrindo")
+        if (!svc.launchGame(pkg)) return false
+        targetPkg = pkg
+        val end = clock() + 120000
+        var closeTry = 0
+        var lastJogar = 0L
+        while (clock() < end) {
+            chk()
+            val sc = shot()
+            if (sc == null) {
+                sleepc(1000)
+                continue
+            }
+            val jogar = sc.lines.firstOrNull { it.norm.trim() == "jogar" }
+            if (hasPopup(sc)) {
+                val c = closeCands[closeTry % closeCands.size]
+                closeTry++
+                Logger.add("Anuncio detectado: fechando (tentativa $closeTry)")
+                tap(sc.w * c.first, sc.h * c.second)
+                waitFor(1500) { !hasPopup(it) }
+                continue
+            }
+            if (jogar != null) {
+                if (clock() - lastJogar > 8000) {
+                    Logger.add("Tocando em JOGAR")
+                    tap(jogar.rect.exactCenterX(), jogar.rect.exactCenterY())
+                    lastJogar = clock()
+                }
+            } else if (hudVisible()) {
+                svc.foregroundPkg = pkg
+                Logger.add("Jogo de volta: continuando")
+                svc.setStatus("ligado")
+                return true
+            }
+            sleepc(500)
+        }
+        Logger.add("FALHA ao reabrir | tela: ${last?.dump()?.take(500)}")
+        return false
     }
 
     // ================= leitura do HUD =================

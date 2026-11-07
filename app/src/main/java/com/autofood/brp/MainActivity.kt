@@ -173,6 +173,7 @@ class MainActivity : Activity() {
         title(o, "Outros")
         numRow(o, "sleep_alarm", "Alarme quando o sono ficar em (%) ou menos", 20)
         numRow(o, "interval", "Verificar a cada (segundos)", 15)
+        check(o, "auto_reopen", "Reabrir o jogo sozinho se ele fechar", true)
 
         primary(root, "Salvar") {
             save()

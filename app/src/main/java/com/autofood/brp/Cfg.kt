@@ -16,7 +16,8 @@ class Cfg(
     val foodWords: List<String>,
     val speed: Int,      // 0 = Rapido, 1 = Normal, 2 = Seguro
     val waitMax: Int,    // segundos maximos esperando um dialogo aparecer
-    val saver: Boolean   // pausar a captura quando ocioso
+    val saver: Boolean,  // pausar a captura quando ocioso
+    val autoReopen: Boolean // reabrir o jogo se ele fechar
 ) {
     /** Duracao do toque (ms). */
     val tapDur: Long get() = when (speed) { 0 -> 35L; 2 -> 70L; else -> 50L }
@@ -53,7 +54,8 @@ class Cfg(
                 words(p.getString("food_words", "arroz,feijao") ?: "arroz,feijao"),
                 p.getInt("speed", 1).coerceIn(0, 2),
                 p.getInt("wait_max", 10).coerceIn(3, 60),
-                p.getBoolean("saver", true)
+                p.getBoolean("saver", true),
+                p.getBoolean("auto_reopen", true)
             )
         }
     }

@@ -270,6 +270,34 @@ class AutoService : AccessibilityService() {
         }
     }
 
+    // ---------- reabrir o jogo ----------
+
+    fun launchGame(pkg: String): Boolean {
+        return try {
+            val i = packageManager.getLaunchIntentForPackage(pkg) ?: return false
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+            startActivity(i)
+            true
+        } catch (e: Exception) {
+            Logger.add("Erro ao abrir o jogo: $e")
+            false
+        }
+    }
+
+    /** Procura entre os apps instalados um cujo nome contenha [word] (ja normalizado). */
+    fun findPkgByLabel(word: String): String {
+        try {
+            val q = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            for (ri in packageManager.queryIntentActivities(q, 0)) {
+                val label = ri.loadLabel(packageManager).toString()
+                if (OcrUtil.normalize(label).contains(word)) return ri.activityInfo.packageName
+            }
+        } catch (e: Exception) {
+            Logger.add("Erro procurando o jogo: $e")
+        }
+        return ""
+    }
+
     // ---------- alarme ----------
 
     fun alarm() {
