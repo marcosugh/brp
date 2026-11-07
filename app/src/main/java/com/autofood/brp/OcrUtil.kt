@@ -20,12 +20,14 @@ class Screen(val w: Int, val h: Int, val lines: List<OLine>) {
 
 object OcrUtil {
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
+    private val marks = Regex("\\p{M}+")
 
     fun normalize(s: String): String {
         val n = Normalizer.normalize(s, Normalizer.Form.NFD)
-        return n.replace(Regex("\\p{M}+"), "").lowercase()
+        return n.replace(marks, "").lowercase()
     }
 
+    /** Le o bitmap. NAO recicla: quem chamou e dono da imagem. */
     fun scan(bmp: Bitmap): Screen {
         val out = ArrayList<OLine>()
         try {
@@ -42,11 +44,19 @@ object OcrUtil {
         return Screen(bmp.width, bmp.height, out)
     }
 
-    /** OCR numa regiao ampliada (bom para texto pequeno). Retorna coordenadas da imagem original. */
+    /**
+     * OCR numa regiao ampliada (bom para texto pequeno). Retorna coordenadas da imagem original.
+     * Recicla as imagens intermediarias (recorte e ampliada). O bitmap original continua com quem chamou.
+     */
     fun scanRegion(bmp: Bitmap, x0: Int, y0: Int, x1: Int, y1: Int, scale: Int): Screen {
         val crop = Bitmap.createBitmap(bmp, x0, y0, x1 - x0, y1 - y0)
         val up = Bitmap.createScaledBitmap(crop, crop.width * scale, crop.height * scale, true)
-        val s = scan(up)
+        val s = try {
+            scan(up)
+        } finally {
+            if (up !== crop) up.recycle()
+            if (crop !== bmp) crop.recycle()
+        }
         val mapped = s.lines.map {
             OLine(
                 it.text,

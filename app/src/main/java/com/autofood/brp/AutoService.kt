@@ -7,6 +7,8 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Handler
@@ -15,9 +17,9 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.concurrent.CountDownLatch
@@ -27,6 +29,15 @@ class AutoService : AccessibilityService() {
     companion object {
         @Volatile
         var instance: AutoService? = null
+
+        private val C_PANEL = Color.parseColor("#E6111820")
+        private val C_STROKE = Color.parseColor("#33FFFFFF")
+        private val C_SLATE = Color.parseColor("#2B3542")
+        private val C_GREEN = Color.parseColor("#22C55E")
+        private val C_BLUE = Color.parseColor("#0EA5E9")
+        private val C_AMBER = Color.parseColor("#D97706")
+        private val C_GRAY = Color.parseColor("#8A97A6")
+        private val C_WARN = Color.parseColor("#F59E0B")
     }
 
     @Volatile
@@ -38,7 +49,8 @@ class AutoService : AccessibilityService() {
     private var wm: WindowManager? = null
     private var box: LinearLayout? = null
     private var statusTv: TextView? = null
-    private var autoBtn: Button? = null
+    private var dot: View? = null
+    private var autoBtn: TextView? = null
     private var dx = 0f
     private var dy = 0f
     private var ox = 0
@@ -75,18 +87,32 @@ class AutoService : AccessibilityService() {
 
     private fun dp(n: Int): Int = (n * resources.displayMetrics.density).toInt()
 
-    private fun mkBtn(text: String, onClick: () -> Unit): Button {
-        val b = Button(this)
-        b.text = text
-        b.textSize = 11f
-        b.isAllCaps = false
-        b.minWidth = 0
-        b.minimumWidth = 0
-        b.minHeight = 0
-        b.minimumHeight = 0
-        b.setPadding(dp(8), dp(4), dp(8), dp(4))
-        b.setOnClickListener { onClick() }
-        return b
+    private fun rounded(color: Int, radiusDp: Int, strokeColor: Int = 0, strokeDp: Int = 0): GradientDrawable {
+        val g = GradientDrawable()
+        g.setColor(color)
+        g.cornerRadius = dp(radiusDp).toFloat()
+        if (strokeDp > 0) g.setStroke(dp(strokeDp), strokeColor)
+        return g
+    }
+
+    private fun circle(color: Int): GradientDrawable {
+        val g = GradientDrawable()
+        g.shape = GradientDrawable.OVAL
+        g.setColor(color)
+        return g
+    }
+
+    private fun pill(text: String, color: Int, onClick: () -> Unit): TextView {
+        val t = TextView(this)
+        t.text = text
+        t.textSize = 12f
+        t.setTextColor(Color.WHITE)
+        t.typeface = Typeface.DEFAULT_BOLD
+        t.gravity = Gravity.CENTER
+        t.setPadding(dp(14), dp(8), dp(14), dp(8))
+        t.background = rounded(color, 14)
+        t.setOnClickListener { onClick() }
+        return t
     }
 
     private fun createPanel() {
@@ -96,30 +122,46 @@ class AutoService : AccessibilityService() {
 
         val b = LinearLayout(this)
         b.orientation = LinearLayout.VERTICAL
-        b.setBackgroundColor(Color.argb(170, 0, 0, 0))
-        b.setPadding(dp(4), dp(4), dp(4), dp(4))
+        b.background = rounded(C_PANEL, 18, C_STROKE, 1)
+        b.setPadding(dp(8), dp(2), dp(8), dp(8))
 
-        val handle = TextView(this)
-        handle.text = "::::"
-        handle.setTextColor(Color.WHITE)
-        handle.gravity = Gravity.CENTER
-        b.addView(handle)
+        // alca para arrastar
+        val grip = LinearLayout(this)
+        grip.gravity = Gravity.CENTER
+        val bar = View(this)
+        bar.background = rounded(Color.parseColor("#66FFFFFF"), 3)
+        grip.addView(bar, LinearLayout.LayoutParams(dp(32), dp(4)))
+        b.addView(grip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(18)))
 
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
-        val ab = mkBtn("AUTO") { toggle() }
+        row.gravity = Gravity.CENTER
+        val ab = pill("AUTO", C_SLATE) { toggle() }
         autoBtn = ab
-        row.addView(ab)
-        row.addView(mkBtn("TA") { bot.test(Kind.WATER) })
-        row.addView(mkBtn("TC") { bot.test(Kind.FOOD) })
+        val gap = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        gap.setMargins(dp(3), 0, dp(3), 0)
+        row.addView(ab, gap)
+        row.addView(pill("TA", C_BLUE) { bot.test(Kind.WATER) }, gap)
+        row.addView(pill("TC", C_AMBER) { bot.test(Kind.FOOD) }, gap)
         b.addView(row)
 
+        val srow = LinearLayout(this)
+        srow.orientation = LinearLayout.HORIZONTAL
+        srow.gravity = Gravity.CENTER
+        srow.setPadding(0, dp(6), 0, 0)
+        val d = View(this)
+        d.background = circle(C_GRAY)
+        dot = d
+        val dl = LinearLayout.LayoutParams(dp(8), dp(8))
+        dl.setMargins(0, 0, dp(6), 0)
+        srow.addView(d, dl)
         val st = TextView(this)
         st.text = "parado"
-        st.setTextColor(Color.WHITE)
+        st.setTextColor(Color.parseColor("#C9D3DE"))
         st.textSize = 11f
         statusTv = st
-        b.addView(st)
+        srow.addView(st)
+        b.addView(srow)
 
         val p = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -132,7 +174,7 @@ class AutoService : AccessibilityService() {
         p.x = dp(10)
         p.y = dp(110)
 
-        handle.setOnTouchListener { _, ev ->
+        grip.setOnTouchListener { _, ev ->
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
                     dx = ev.rawX
@@ -164,22 +206,35 @@ class AutoService : AccessibilityService() {
         refreshButtons()
     }
 
+    private fun statusColor(t: String): Int = when {
+        t.startsWith("sem") || t.startsWith("espera") || t.startsWith("parando") -> C_WARN
+        t == "ligado" || t == "bebendo" || t == "comendo" -> C_GREEN
+        t == "testando" -> C_BLUE
+        else -> C_GRAY
+    }
+
     fun setStatus(t: String) {
-        main.post { statusTv?.text = t }
+        main.post {
+            statusTv?.text = t
+            dot?.background = circle(statusColor(t))
+        }
     }
 
     fun refreshButtons() {
-        main.post { autoBtn?.text = if (bot.running) "AUTO ON" else "AUTO" }
+        main.post {
+            val on = bot.running
+            autoBtn?.text = if (on) "AUTO ON" else "AUTO"
+            autoBtn?.background = rounded(if (on) C_GREEN else C_SLATE, 14)
+        }
     }
 
     // ---------- toques ----------
 
-    fun tap(x: Float, y: Float): Boolean {
+    /** O toque ja espera o Android confirmar o gesto; nao ha pausa extra depois. */
+    fun tap(x: Float, y: Float, dur: Long = 50L): Boolean {
         val path = Path()
         path.moveTo(x, y)
-        val ok = gesture(path, 70)
-        try { Thread.sleep(80) } catch (e: Exception) { }
-        return ok
+        return gesture(path, dur)
     }
 
     fun swipe(x1: Float, y1: Float, x2: Float, y2: Float, dur: Long): Boolean {

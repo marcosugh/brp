@@ -26,6 +26,8 @@ class CaptureService : Service() {
     companion object {
         @Volatile
         var instance: CaptureService? = null
+
+        private const val IDLE_MS = 3000L
     }
 
     private var projection: MediaProjection? = null
@@ -35,6 +37,32 @@ class CaptureService : Service() {
     private var curH = 0
     private var released = false
     private val lock = Any()
+
+    // economia: com o bot ocioso, o VirtualDisplay deixa de renderizar (surface = null)
+    @Volatile private var paused = false
+    @Volatile private var pauseDisabled = false
+    @Volatile private var lastUse = 0L
+    private val handler = Handler(Looper.getMainLooper())
+    private val idleCheck = object : Runnable {
+        override fun run() {
+            if (released) return
+            try {
+                if (!paused && !pauseDisabled &&
+                    System.currentTimeMillis() - lastUse > IDLE_MS &&
+                    Cfg.prefs(this@CaptureService).getBoolean("saver", true)
+                ) {
+                    synchronized(lock) {
+                        vd?.surface = null
+                        paused = true
+                    }
+                }
+            } catch (e: Exception) {
+                pauseDisabled = true
+                Logger.add("Pausa da captura indisponivel: $e")
+            }
+            handler.postDelayed(this, 1000)
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -73,6 +101,8 @@ class CaptureService : Service() {
             setup(w, h, d)
             instance = this
             released = false
+            lastUse = System.currentTimeMillis()
+            handler.postDelayed(idleCheck, 1000)
             Logger.add("Captura de tela pronta: ${w}x$h")
         } catch (e: Exception) {
             Logger.add("Erro na captura: $e")
@@ -101,6 +131,7 @@ class CaptureService : Service() {
             existing.resize(w, h, dpi)
             existing.surface = r.surface
         }
+        paused = false
         val old = reader
         reader = r
         curW = w
@@ -108,8 +139,17 @@ class CaptureService : Service() {
         try { old?.close() } catch (e: Exception) { }
     }
 
+    /**
+     * Devolve um bitmap NOVO a cada chamada. Quem chama deve chamar recycle() assim que terminar de usar.
+     * Nada e gravado em disco.
+     */
     fun capture(): Bitmap? {
-        return synchronized(lock) { captureLocked() }
+        lastUse = System.currentTimeMillis()
+        try {
+            return synchronized(lock) { captureLocked() }
+        } finally {
+            lastUse = System.currentTimeMillis()
+        }
     }
 
     private fun captureLocked(): Bitmap? {
@@ -120,15 +160,31 @@ class CaptureService : Service() {
             Thread.sleep(700)
         }
         val r = reader ?: return null
+        val wasPaused = paused
+        if (wasPaused) {
+            try {
+                vd?.surface = r.surface
+            } catch (e: Exception) {
+                Logger.add("Erro ao retomar captura: $e")
+            }
+            paused = false
+        }
+        // descarta qualquer quadro velho: so vale um quadro gerado a partir de agora
         try { r.acquireLatestImage()?.close() } catch (e: Exception) { }
-        Thread.sleep(130)
         var img: Image? = null
         val end = System.currentTimeMillis() + 2500
         while (img == null && System.currentTimeMillis() < end) {
             img = try { r.acquireLatestImage() } catch (e: Exception) { null }
-            if (img == null) Thread.sleep(40)
+            if (img == null) Thread.sleep(8)
         }
-        if (img == null) return null
+        if (img == null) {
+            if (wasPaused && !pauseDisabled) {
+                // se retomar nao entregou quadro, desliga a economia para nao atrapalhar o bot
+                pauseDisabled = true
+                Logger.add("Retomar captura nao entregou imagem: economia de captura desligada")
+            }
+            return null
+        }
         try {
             val plane = img.planes[0]
             val pw = img.width
@@ -150,6 +206,7 @@ class CaptureService : Service() {
         if (released) return
         released = true
         instance = null
+        handler.removeCallbacks(idleCheck)
         val p = projection
         projection = null
         try { vd?.release() } catch (e: Exception) { }
