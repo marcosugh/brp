@@ -27,8 +27,9 @@ jobs:
         run: |
           N=${{ github.run_number }}
           cp app/build/outputs/apk/debug/app-debug.apk "AutoFood-v$N.apk"
+          if [ "${{ github.ref_name }}" = "main" ]; then FLAG="--latest"; else FLAG="--prerelease"; fi
           gh release create "v$N" "AutoFood-v$N.apk" \
             --target "${{ github.sha }}" \
             --title "AutoFood BRP v$N" \
             --notes "Build $N da branch ${{ github.ref_name }}. Baixe o arquivo AutoFood-v$N.apk e instale." \
-            --prerelease
+            $FLAG

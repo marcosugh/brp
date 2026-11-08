@@ -11,8 +11,8 @@ android {
         applicationId 'com.autofood.brp'
         minSdk 26
         targetSdk 34
-        versionCode 2
-        versionName '1.1'
+        versionCode 3
+        versionName '1.2'
     }
     // chave de assinatura fixa: cada APK novo instala POR CIMA do anterior, sem perder configuracoes
     signingConfigs {

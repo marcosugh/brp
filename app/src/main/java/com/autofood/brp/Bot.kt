@@ -38,6 +38,12 @@ class Bot(private val svc: AutoService) {
     private var last: Screen? = null
 
     private var offSince = 0L
+    private var noReadSince = 0L
+
+    /** true enquanto o bot esta entrando no jogo (os toques sao permitidos mesmo com o jogo ainda fora da frente). */
+    @Volatile
+    private var recovering = false
+    private val errTimes = ArrayList<Long>()
     private var noRecoverUntil = 0L
     private var recoverFails = 0
     private val popupWords = listOf("promocao", "halloween", "evento", "oferta")
@@ -74,10 +80,14 @@ class Bot(private val svc: AutoService) {
         running = true
         targetPkg = pkg
         stats = Stats()
+        blocked.clear()
+        lastAlarm = 0L
+        offSince = 0L
+        noReadSince = 0L
         svc.refreshButtons()
         Thread {
             try {
-                loop()
+                loopSafe()
             } catch (e: Stop) {
                 Logger.add("Bot parado")
             } catch (e: Throwable) {
@@ -164,8 +174,39 @@ class Bot(private val svc: AutoService) {
     private fun poll(): Long = cfg?.poll ?: 40L
     private fun tmo(): Long = cfg?.waitMs ?: 10000L
 
+    /** true se o jogo (alvo do AUTO) nao esta mais na frente e o bot nao esta no meio de reabri-lo. */
+    private fun gameLost(): Boolean = !recovering && targetPkg.isNotEmpty() && svc.foregroundPkg != targetPkg
+
     private fun tap(x: Float, y: Float) {
+        if (gameLost()) {
+            // nunca tocar na tela inicial ou em outro app
+            Logger.add("Toque ignorado: o jogo nao esta em primeiro plano")
+            return
+        }
         svc.tap(x, y, tapDur())
+    }
+
+    /** Roda o loop e, se der um erro inesperado, registra e continua (so desiste se errar demais em pouco tempo). */
+    private fun loopSafe() {
+        while (true) {
+            try {
+                loop()
+                return
+            } catch (e: Stop) {
+                throw e
+            } catch (e: Throwable) {
+                val now = clock()
+                errTimes.add(now)
+                errTimes.removeAll { now - it > 120000 }
+                Logger.add("ERRO (continuando): $e")
+                stats?.let { it.fails++ }
+                if (errTimes.size >= 8) {
+                    Logger.add("ERRO: muitos erros seguidos, parando")
+                    throw e
+                }
+                sleepc(3000)
+            }
+        }
     }
 
     private fun isBlocked(k: Kind): Boolean = (blocked[k] ?: 0L) > clock()
@@ -214,26 +255,56 @@ class Bot(private val svc: AutoService) {
             val lv = readLevels()
             if (lv == null) {
                 svc.setStatus("sem leitura")
-                sleepc(5000)
+                if (noReadSince == 0L) noReadSince = clock()
+                val el = clock() - noReadSince
+                if (el > 20000 && s.autoReopen && targetPkg.isNotEmpty()) {
+                    // sem barras ha um tempo: pode ter voltado ao lobby (ex.: depois de reconectar) ou ter um anuncio
+                    val sc = shot()
+                    if (sc != null && (hasJogar(sc) || visionX(emptyList(), 0.3f) != null)) {
+                        Logger.add("Sem barras ha ${el / 1000}s e lobby/anuncio visivel: entrando no jogo")
+                        enterGame(targetPkg, 120000)
+                        noReadSince = 0L
+                        continue
+                    }
+                }
+                if (el > 90000 && s.autoReconnect && tryReconnect()) {
+                    noReadSince = 0L
+                    continue
+                }
+                sleepc(3000)
                 continue
             }
+            noReadSince = 0L
             stats?.let { if (it.first == null) it.first = lv; it.last = lv }
             svc.setStatus("ligado")
             val now = clock()
             if (lv.sleep <= s.sleepAlarm && now - lastAlarm > 60000) {
-                lastAlarm = now
-                alarm()
-                Logger.add("ALERTA: sono em ${lv.sleep}%")
+                val c = readLevels() // confirma antes de tocar o alarme
+                if (c != null && c.sleep <= s.sleepAlarm) {
+                    lastAlarm = now
+                    alarm()
+                    Logger.add("ALERTA: sono em ${c.sleep}%")
+                }
             }
             var lvNow = lv
-            // 1) agua primeiro, ate a meta
+            // 1) agua primeiro, ate a meta (confirma a leitura baixa antes de agir: evita usar item por erro de OCR)
             if (s.waterOn && lv.drink <= s.waterTrigger && !isBlocked(Kind.WATER)) {
-                consume(Kind.WATER, s, lv.drink)
-                lvNow = readLevels() ?: lv
+                val c = readLevels()
+                if (c != null && c.drink <= s.waterTrigger) {
+                    consume(Kind.WATER, s, c.drink)
+                    lvNow = readLevels() ?: c
+                } else {
+                    Logger.add("Leitura de agua nao confirmou (${lv.drink}% -> ${c?.drink}%): ignorada")
+                }
             }
             // 2) depois comida, ate a meta
             if (s.foodOn && lvNow.food <= s.foodTrigger && !isBlocked(Kind.FOOD)) {
-                consume(Kind.FOOD, s, lvNow.food)
+                val c = readLevels()
+                if (c != null && c.food <= s.foodTrigger) {
+                    consume(Kind.FOOD, s, c.food)
+                } else {
+                    Logger.add("Leitura de comida nao confirmou (${lvNow.food}% -> ${c?.food}%): ignorada")
+                }
             }
             svc.setStatus("ligado")
             sleepc(s.interval * 1000L)
@@ -248,6 +319,10 @@ class Bot(private val svc: AutoService) {
         var cur = startLevel
         while (uses < 12) {
             chk()
+            if (gameLost()) {
+                Logger.add("Jogo saiu da tela durante o uso")
+                return
+            }
             if (cur >= target) {
                 Logger.add("$name em $cur% (meta $target%)")
                 return
@@ -420,7 +495,23 @@ class Bot(private val svc: AutoService) {
         svc.setStatus("reabrindo")
         if (!svc.launchGame(pkg)) return false
         targetPkg = pkg
-        val end = clock() + 150000
+        return enterGame(pkg, 150000)
+    }
+
+    private fun hasJogar(sc: Screen) = sc.lines.any { it.norm.trim() == "jogar" }
+
+    /** Do lobby ate a tela do jogo: fecha o anuncio, toca em JOGAR e espera as barras aparecerem. */
+    private fun enterGame(pkg: String, timeoutMs: Long): Boolean {
+        recovering = true
+        try {
+            return enterGameLoop(pkg, timeoutMs)
+        } finally {
+            recovering = false
+        }
+    }
+
+    private fun enterGameLoop(pkg: String, timeoutMs: Long): Boolean {
+        val end = clock() + timeoutMs
         var closeTry = 0
         var lastJogar = 0L
         var jogarTaps = 0
@@ -433,38 +524,35 @@ class Bot(private val svc: AutoService) {
                 continue
             }
             val jogar = sc.lines.firstOrNull { it.norm.trim() == "jogar" }
-            val popupWords = hasPopup(sc)
-            if (jogar != null || popupWords) {
-                // anuncio: por texto, ou JOGAR ja tocado 2x sem sair do lobby, ou X visto por imagem
-                val stuck = jogarTaps >= 2
-                val c = if (popupWords || stuck) adClosePoint(sc, closeTry, tried) else visionX(tried, 0.3f)
-                if (c != null) {
-                    closeTry++
-                    tried.add(c)
-                    Logger.add("Anuncio: tocando em (" + c.first.toInt() + "," + c.second.toInt() + ") tentativa $closeTry")
-                    if (closeTry == 4) Logger.add("Tela do anuncio: " + sc.dump().take(500))
-                    tap(c.first, c.second)
-                    if (stuck) jogarTaps = 0
-                    sleepc(400)
-                    continue
-                }
-                if (jogar != null && clock() - lastJogar > 5000) {
-                    Logger.add("Tocando em JOGAR")
-                    tap(jogar.rect.exactCenterX(), jogar.rect.exactCenterY())
-                    lastJogar = clock()
-                    jogarTaps++
-                }
-                sleepc(150)
-                continue
-            }
-            if (hudVisible()) {
+            // dentro do jogo as barras aparecem: pronto (checa antes, para textos do chat nao confundirem)
+            if (jogar == null && hudVisible()) {
                 svc.foregroundPkg = pkg
                 stats?.let { it.reopens++ }
                 Logger.add("Jogo de volta: continuando")
                 svc.setStatus("ligado")
                 return true
             }
-            sleepc(300)
+            val popupWords = hasPopup(sc)
+            // anuncio: por texto, ou JOGAR ja tocado 2x sem sair do lobby, ou X visto por imagem
+            val stuck = jogarTaps >= 2
+            val c = if (popupWords || stuck) adClosePoint(sc, closeTry, tried) else visionX(tried, 0.3f)
+            if (c != null) {
+                closeTry++
+                tried.add(c)
+                Logger.add("Anuncio: tocando em (" + c.first.toInt() + "," + c.second.toInt() + ") tentativa $closeTry")
+                if (closeTry == 4) Logger.add("Tela do anuncio: " + sc.dump().take(500))
+                tap(c.first, c.second)
+                if (stuck) jogarTaps = 0
+                sleepc(400)
+                continue
+            }
+            if (jogar != null && clock() - lastJogar > 5000) {
+                Logger.add("Tocando em JOGAR")
+                tap(jogar.rect.exactCenterX(), jogar.rect.exactCenterY())
+                lastJogar = clock()
+                jogarTaps++
+            }
+            sleepc(if (jogar != null) 150L else 300L)
         }
         Logger.add("FALHA ao reabrir | tela: ${last?.dump()?.take(500)}")
         return false
@@ -589,6 +677,7 @@ class Bot(private val svc: AutoService) {
         var n = 0
         while (clock() < end) {
             chk()
+            if (gameLost()) return null
             val r = roiFor(keys)
             val full = r == null || n % 4 == 3
             val sc = shotAt(if (full) null else r)
@@ -609,6 +698,7 @@ class Bot(private val svc: AutoService) {
         val end = clock() + timeout
         while (clock() < end) {
             chk()
+            if (gameLost()) return null
             val sc = shot()
             if (sc != null && pred(sc)) return sc
             if (poll() > 0) sleepc(poll())
@@ -771,6 +861,7 @@ class Bot(private val svc: AutoService) {
     }
 
     private fun useItem(kind: Kind, s: Cfg): Res {
+        if (gameLost()) return Res.FAIL
         val words = if (kind == Kind.WATER) s.waterWords else s.foodWords
         val listLine: (Screen, OLine) -> Boolean = { sc, l ->
             invRe.containsMatchIn(l.norm) || l.norm.contains("ver bolsos") ||
