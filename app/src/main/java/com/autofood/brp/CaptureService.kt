@@ -72,7 +72,7 @@ class CaptureService : Service() {
         val n = Notification.Builder(this, "af")
             .setContentTitle("AutoFood BRP")
             .setContentText("Captura de tela ativa")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_stat)
             .build()
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)

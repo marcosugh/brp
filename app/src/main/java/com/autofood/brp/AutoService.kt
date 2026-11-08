@@ -22,6 +22,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -38,6 +39,8 @@ class AutoService : AccessibilityService() {
         private val C_AMBER = Color.parseColor("#D97706")
         private val C_GRAY = Color.parseColor("#8A97A6")
         private val C_WARN = Color.parseColor("#F59E0B")
+        private val C_RED = Color.parseColor("#EF4444")
+        private val C_ON_GREEN = Color.parseColor("#04210F")
     }
 
     @Volatile
@@ -51,6 +54,8 @@ class AutoService : AccessibilityService() {
     private var statusTv: TextView? = null
     private var dot: View? = null
     private var autoBtn: TextView? = null
+    private var taBtn: TextView? = null
+    private var tcBtn: TextView? = null
     private var dx = 0f
     private var dy = 0f
     private var ox = 0
@@ -61,6 +66,7 @@ class AutoService : AccessibilityService() {
         instance = this
         Logger.init(applicationContext)
         createPanel()
+        refreshButtons()
         Logger.add("Acessibilidade conectada")
     }
 
@@ -142,8 +148,12 @@ class AutoService : AccessibilityService() {
         val gap = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         gap.setMargins(dp(3), 0, dp(3), 0)
         row.addView(ab, gap)
-        row.addView(pill("TA", C_BLUE) { bot.test(Kind.WATER) }, gap)
-        row.addView(pill("TC", C_AMBER) { bot.test(Kind.FOOD) }, gap)
+        val tb = pill("TA", C_SLATE) { bot.test(Kind.WATER) }
+        taBtn = tb
+        row.addView(tb, gap)
+        val cb = pill("TC", C_SLATE) { bot.test(Kind.FOOD) }
+        tcBtn = cb
+        row.addView(cb, gap)
         b.addView(row)
 
         val srow = LinearLayout(this)
@@ -208,7 +218,8 @@ class AutoService : AccessibilityService() {
     }
 
     private fun statusColor(t: String): Int = when {
-        t.startsWith("sem") || t.startsWith("espera") || t.startsWith("parando") -> C_WARN
+        t.startsWith("sem") || t.startsWith("erro") -> C_RED
+        t.startsWith("espera") || t.startsWith("parando") || t.startsWith("reabrindo") -> C_WARN
         t == "ligado" || t == "bebendo" || t == "comendo" -> C_GREEN
         t == "testando" -> C_BLUE
         else -> C_GRAY
@@ -224,8 +235,25 @@ class AutoService : AccessibilityService() {
     fun refreshButtons() {
         main.post {
             val on = bot.running
+            val tk = bot.testKind
             autoBtn?.text = if (on) "AUTO ON" else "AUTO"
             autoBtn?.background = rounded(if (on) C_GREEN else C_SLATE, 14)
+            autoBtn?.setTextColor(if (on) C_ON_GREEN else Color.WHITE)
+            styleTest(taBtn, tk == Kind.WATER, on, C_BLUE)
+            styleTest(tcBtn, tk == Kind.FOOD, on, C_AMBER)
+        }
+    }
+
+    private fun styleTest(b: TextView?, active: Boolean, disabled: Boolean, color: Int) {
+        if (b == null) return
+        b.background = rounded(if (active) color else C_SLATE, 14)
+        b.setTextColor(if (active) Color.WHITE else Color.parseColor("#C9D3DE"))
+        b.alpha = if (disabled) 0.4f else 1f
+    }
+
+    fun toast(t: String) {
+        main.post {
+            try { Toast.makeText(this, t, Toast.LENGTH_LONG).show() } catch (e: Exception) { }
         }
     }
 

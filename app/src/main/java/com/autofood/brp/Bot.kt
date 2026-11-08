@@ -24,6 +24,13 @@ class Bot(private val svc: AutoService) {
     @Volatile
     private var cfg: Cfg? = null
 
+    /** Qual teste manual (TA/TC) esta rodando, para o painel destacar o botao. */
+    @Volatile
+    var testKind: Kind? = null
+
+    @Volatile
+    private var stats: Stats? = null
+
     private val blocked = HashMap<Kind, Long>()
     private var lastAlarm = 0L
 
@@ -66,6 +73,7 @@ class Bot(private val svc: AutoService) {
         cancel = false
         running = true
         targetPkg = pkg
+        stats = Stats()
         svc.refreshButtons()
         Thread {
             try {
@@ -77,6 +85,7 @@ class Bot(private val svc: AutoService) {
             } finally {
                 running = false
                 busy = false
+                finishSession()
                 svc.setStatus("parado")
                 svc.refreshButtons()
             }
@@ -95,6 +104,8 @@ class Bot(private val svc: AutoService) {
         busy = true
         cancel = false
         svc.setStatus("testando")
+        testKind = kind
+        svc.refreshButtons()
         Thread {
             try {
                 OcrUtil.warmUp()
@@ -108,9 +119,29 @@ class Bot(private val svc: AutoService) {
                 Logger.add("ERRO: $e")
             } finally {
                 busy = false
+                testKind = null
                 svc.setStatus("pronto")
+                svc.refreshButtons()
             }
         }.start()
+    }
+
+    private fun alarm() {
+        stats?.let { it.alarms++ }
+        svc.alarm()
+    }
+
+    private fun finishSession() {
+        val st = stats ?: return
+        stats = null
+        try {
+            st.finish(svc)
+            val dur = Stats.fmt(System.currentTimeMillis() - st.startMs)
+            Logger.add("RESUMO: $dur | agua ${st.water} | comida ${st.food} | falhas ${st.fails} | alarmes ${st.alarms} | jogo reaberto ${st.reopens}")
+            svc.toast("AutoFood: ${st.water} água e ${st.food} comida em $dur")
+        } catch (e: Exception) {
+            Logger.add("Erro ao salvar resumo: $e")
+        }
     }
 
     private fun chk() {
@@ -162,7 +193,7 @@ class Bot(private val svc: AutoService) {
                         recoverFails++
                         noRecoverUntil = clock() + 60000
                         if (recoverFails >= 3) {
-                            svc.alarm()
+                            alarm()
                             noRecoverUntil = clock() + 300000
                             recoverFails = 0
                             Logger.add("ALERTA: nao consegui reabrir o jogo (nova tentativa em 5 min)")
@@ -186,11 +217,12 @@ class Bot(private val svc: AutoService) {
                 sleepc(5000)
                 continue
             }
+            stats?.let { if (it.first == null) it.first = lv; it.last = lv }
             svc.setStatus("ligado")
             val now = clock()
             if (lv.sleep <= s.sleepAlarm && now - lastAlarm > 60000) {
                 lastAlarm = now
-                svc.alarm()
+                alarm()
                 Logger.add("ALERTA: sono em ${lv.sleep}%")
             }
             var lvNow = lv
@@ -222,19 +254,24 @@ class Bot(private val svc: AutoService) {
             }
             svc.setStatus(if (kind == Kind.WATER) "bebendo" else "comendo")
             Logger.add("Usando $name ($cur%, meta $target%)")
-            when (useItem(kind, s)) {
+            val t0 = clock()
+            val res = useItem(kind, s)
+            val dt = clock() - t0
+            when (res) {
                 Res.NO_ITEM -> {
+                    stats?.let { it.noItem++ }
                     blockFor(kind, 300000)
-                    svc.alarm()
+                    alarm()
                     svc.setStatus(if (kind == Kind.WATER) "sem item A" else "sem item C")
                     Logger.add("ALERTA: acabou $name na mochila (nova tentativa em 5 min)")
                     return
                 }
                 Res.FAIL -> {
                     fails++
+                    stats?.let { it.fails++ }
                     if (fails >= 3) {
                         blockFor(kind, 120000)
-                        svc.alarm()
+                        alarm()
                         Logger.add("ALERTA: 3 falhas seguidas usando $name (nova tentativa em 2 min)")
                         return
                     }
@@ -245,15 +282,17 @@ class Bot(private val svc: AutoService) {
             // em vez de esperar um tempo fixo: le a barra ate ela subir (ou ate o limite)
             val now = waitLevelAbove(kind, cur, 5000)
             if (now > cur) {
+                stats?.let { if (kind == Kind.WATER) it.water++ else it.food++; it.addUse(dt) }
                 uses++
                 fails = 0
                 cur = now
             } else {
                 fails++
+                stats?.let { it.fails++ }
                 Logger.add("$name nao subiu ($cur% -> $now%)")
                 if (fails >= 3) {
                     blockFor(kind, 120000)
-                    svc.alarm()
+                    alarm()
                     Logger.add("ALERTA: $name nao esta subindo (nova tentativa em 2 min)")
                     return
                 }
@@ -330,6 +369,7 @@ class Bot(private val svc: AutoService) {
                 }
             } else if (hudVisible()) {
                 svc.foregroundPkg = pkg
+                stats?.let { it.reopens++ }
                 Logger.add("Jogo de volta: continuando")
                 svc.setStatus("ligado")
                 return true
