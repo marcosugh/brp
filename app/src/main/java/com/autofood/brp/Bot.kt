@@ -186,7 +186,7 @@ class Bot(private val svc: AutoService) {
             if (targetPkg.isNotEmpty() && svc.foregroundPkg != targetPkg) {
                 svc.setStatus("espera")
                 if (offSince == 0L) offSince = clock()
-                if (s.autoReopen && clock() - offSince > 20000 && clock() >= noRecoverUntil) {
+                if (s.autoReopen && clock() - offSince > 8000 && clock() >= noRecoverUntil) {
                     if (recoverGame()) {
                         recoverFails = 0
                     } else {
@@ -366,6 +366,26 @@ class Bot(private val svc: AutoService) {
         return percents(sc).size >= 3
     }
 
+    /** Procura o X do anuncio por imagem (em qualquer resolucao). */
+    private fun visionX(tried: List<Pair<Float, Float>>, maxDistH: Float): Pair<Float, Float>? {
+        val b = CaptureService.instance?.capture() ?: return null
+        return try {
+            XFinder.find(b, tried, maxDistH)
+        } finally {
+            b.recycle()
+        }
+    }
+
+    /** Onde tocar para fechar o anuncio: imagem > "X" lido pelo OCR > posicao estimada > toque fora. */
+    private fun adClosePoint(sc: Screen, i: Int, tried: List<Pair<Float, Float>>): Pair<Float, Float> {
+        val v = visionX(tried, 0.6f)
+        if (v != null) return v
+        val xl = sc.lines.firstOrNull { it.text.trim() in xMarks && it.rect.top < sc.h * 0.5 }
+        if (xl != null) return Pair(xl.rect.exactCenterX(), xl.rect.exactCenterY())
+        if (i % 4 == 3) return Pair(sc.w * 0.35f, sc.h * 0.04f) // area vazia fora do anuncio
+        return closeCand(sc, i)
+    }
+
     private val xMarks = setOf("x", "X", "\u00d7", "\u2715", "\u2716", "\u2573")
 
     /**
@@ -400,42 +420,51 @@ class Bot(private val svc: AutoService) {
         svc.setStatus("reabrindo")
         if (!svc.launchGame(pkg)) return false
         targetPkg = pkg
-        val end = clock() + 120000
+        val end = clock() + 150000
         var closeTry = 0
         var lastJogar = 0L
+        var jogarTaps = 0
+        val tried = ArrayList<Pair<Float, Float>>()
         while (clock() < end) {
             chk()
             val sc = shot()
             if (sc == null) {
-                sleepc(1000)
+                sleepc(500)
                 continue
             }
             val jogar = sc.lines.firstOrNull { it.norm.trim() == "jogar" }
-            if (hasPopup(sc)) {
-                closeTry++
-                // 1) se o OCR leu o "X" como texto, toca nele
-                val xl = sc.lines.firstOrNull { it.text.trim() in xMarks && it.rect.top < sc.h * 0.5 }
-                val c = if (xl != null) Pair(xl.rect.exactCenterX(), xl.rect.exactCenterY()) else closeCand(sc, closeTry - 1)
-                Logger.add("Anuncio detectado: fechando (tentativa $closeTry, " + (if (xl != null) "X lido" else "posicao estimada") + ")")
-                if (closeTry == 3) Logger.add("Tela do anuncio: " + sc.dump().take(500))
-                tap(c.first, c.second)
-                waitFor(1500) { !hasPopup(it) }
-                continue
-            }
-            if (jogar != null) {
-                if (clock() - lastJogar > 8000) {
+            val popupWords = hasPopup(sc)
+            if (jogar != null || popupWords) {
+                // anuncio: por texto, ou JOGAR ja tocado 2x sem sair do lobby, ou X visto por imagem
+                val stuck = jogarTaps >= 2
+                val c = if (popupWords || stuck) adClosePoint(sc, closeTry, tried) else visionX(tried, 0.3f)
+                if (c != null) {
+                    closeTry++
+                    tried.add(c)
+                    Logger.add("Anuncio: tocando em (" + c.first.toInt() + "," + c.second.toInt() + ") tentativa $closeTry")
+                    if (closeTry == 4) Logger.add("Tela do anuncio: " + sc.dump().take(500))
+                    tap(c.first, c.second)
+                    if (stuck) jogarTaps = 0
+                    sleepc(400)
+                    continue
+                }
+                if (jogar != null && clock() - lastJogar > 5000) {
                     Logger.add("Tocando em JOGAR")
                     tap(jogar.rect.exactCenterX(), jogar.rect.exactCenterY())
                     lastJogar = clock()
+                    jogarTaps++
                 }
-            } else if (hudVisible()) {
+                sleepc(150)
+                continue
+            }
+            if (hudVisible()) {
                 svc.foregroundPkg = pkg
                 stats?.let { it.reopens++ }
                 Logger.add("Jogo de volta: continuando")
                 svc.setStatus("ligado")
                 return true
             }
-            sleepc(500)
+            sleepc(300)
         }
         Logger.add("FALHA ao reabrir | tela: ${last?.dump()?.take(500)}")
         return false
