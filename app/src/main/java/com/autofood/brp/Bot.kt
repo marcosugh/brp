@@ -269,6 +269,10 @@ class Bot(private val svc: AutoService) {
                 Res.FAIL -> {
                     fails++
                     stats?.let { it.fails++ }
+                    if (fails == 2 && s.autoReconnect && tryReconnect()) {
+                        fails = 0
+                        continue
+                    }
                     if (fails >= 3) {
                         blockFor(kind, 120000)
                         alarm()
@@ -314,6 +318,40 @@ class Bot(private val svc: AutoService) {
             if (poll() > 0) sleepc(poll())
         }
         return v
+    }
+
+    // ================= reconectar (/rec) =================
+
+    private var lastReconnect = 0L
+
+    /** Se os dialogos nao abrem: digita /rec, toca em Reconectar e espera o jogo voltar. No maximo 1 vez a cada 2 min. */
+    private fun tryReconnect(): Boolean {
+        if (clock() - lastReconnect < 120000) return false
+        lastReconnect = clock()
+        Logger.add("Dialogos nao abrem: tentando /rec")
+        svc.setStatus("reconectando")
+        cleanState()
+        if (!typeCommand("/rec")) return false
+        val sc = waitFor(tmo()) { it.has("reconectar") }
+        if (sc == null) {
+            Logger.add("Dialogo Reconectar nao apareceu | tela: " + last?.dump()?.take(400))
+            return false
+        }
+        val l = sc.lines.filter { it.norm.contains("reconectar") }.maxByOrNull { it.rect.top } ?: return false
+        tap(l.rect.exactCenterX(), l.rect.exactCenterY())
+        stats?.let { it.reconnects++ }
+        val end = clock() + 90000
+        while (clock() < end) {
+            chk()
+            if (hudVisible()) {
+                Logger.add("Reconectado: continuando")
+                svc.setStatus("ligado")
+                return true
+            }
+            sleepc(1000)
+        }
+        Logger.add("Reconectar nao voltou ao jogo em 90s")
+        return false
     }
 
     // ================= recuperar o jogo =================
@@ -621,7 +659,10 @@ class Bot(private val svc: AutoService) {
         }
     }
 
-    private fun openBolsos(): Boolean {
+    private fun openBolsos(): Boolean = typeCommand("/bolsos")
+
+    /** Abre o chat, digita o comando e envia. */
+    private fun typeCommand(cmd: String): Boolean {
         for (attempt in 1..3) {
             chk()
             var sc = shotAt(roiFor(kbdKeys)) ?: continue
@@ -634,7 +675,7 @@ class Bot(private val svc: AutoService) {
             if (!sc.has("digite algo")) {
                 for (i in 0 until 14) tapFrac(sc, 0.922f, 0.825f)
             }
-            typeText(sc, "/bolsos")
+            typeText(sc, cmd)
             // espera o texto aparecer no campo (o aviso "digite algo" some)
             val v = waitStep(kbdKeys, 1500, null) { !it.has("digite algo") }
             if (v == null) {

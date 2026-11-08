@@ -219,7 +219,7 @@ class AutoService : AccessibilityService() {
 
     private fun statusColor(t: String): Int = when {
         t.startsWith("sem") || t.startsWith("erro") -> C_RED
-        t.startsWith("espera") || t.startsWith("parando") || t.startsWith("reabrindo") -> C_WARN
+        t.startsWith("espera") || t.startsWith("parando") || t.startsWith("reabrindo") || t.startsWith("reconectando") -> C_WARN
         t == "ligado" || t == "bebendo" || t == "comendo" -> C_GREEN
         t == "testando" -> C_BLUE
         else -> C_GRAY
