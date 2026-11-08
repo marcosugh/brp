@@ -13,6 +13,8 @@ class OLine(val text: String, val rect: Rect) {
 }
 
 class Screen(val w: Int, val h: Int, val lines: List<OLine>) {
+    /** true quando so um retangulo da tela foi lido (leitura rapida). */
+    var partial = false
     fun find(sub: String): OLine? = lines.firstOrNull { it.norm.contains(sub) }
     fun has(sub: String): Boolean = find(sub) != null
     fun dump(): String = lines.joinToString(" | ") { it.text }
@@ -25,6 +27,14 @@ object OcrUtil {
     fun normalize(s: String): String {
         val n = Normalizer.normalize(s, Normalizer.Form.NFD)
         return n.replace(marks, "").lowercase()
+    }
+
+    /** Aquece o OCR (a primeira leitura e lenta). */
+    fun warmUp() {
+        try {
+            val b = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+            try { scan(b) } finally { b.recycle() }
+        } catch (e: Exception) { }
     }
 
     /** Le o bitmap. NAO recicla: quem chamou e dono da imagem. */

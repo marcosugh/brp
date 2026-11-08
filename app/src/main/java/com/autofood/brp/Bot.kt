@@ -1,5 +1,7 @@
 package com.autofood.brp
 
+import android.graphics.Rect
+
 enum class Kind { WATER, FOOD }
 enum class Res { OK, FAIL, NO_ITEM }
 class Levels(val food: Int, val drink: Int, val sleep: Int)
@@ -34,6 +36,22 @@ class Bot(private val svc: AutoService) {
     private val popupWords = listOf("promocao", "halloween", "evento", "oferta")
     // posicoes estimadas do X do anuncio (fracao da tela), medidas num print do MEmu
     private val closeCands = listOf(Pair(0.784f, 0.248f), Pair(0.80f, 0.23f), Pair(0.77f, 0.265f))
+
+    // retangulos aprendidos onde o texto de cada etapa aparece (leitura rapida das proximas vezes)
+    private val roi = HashMap<String, Rect>()
+    private val dlgKeys = listOf("bolsos", "list", "actions")
+    private val kbdKeys = listOf("kbd")
+    private val kbdLine: (Screen, OLine) -> Boolean = { sc, l ->
+        l.norm.contains("digite algo") || (l.norm.contains("lang") && l.rect.top > sc.h * 0.8)
+    }
+    private val bolsosLine: (Screen, OLine) -> Boolean = { sc, l ->
+        l.norm.contains("abrir mochila") || l.norm.contains("ver armas") || l.norm.contains("ver drogas") ||
+            (l.norm.contains("selecionar") && l.rect.top > sc.h * 0.4)
+    }
+    private val actionsLine: (Screen, OLine) -> Boolean = { sc, l ->
+        l.norm.contains("destruir") || l.norm.contains("transferir") || l.norm.contains("mover i") ||
+            (l.norm.contains("selecionar") && l.rect.top > sc.h * 0.4)
+    }
 
     private val invRe = Regex("inv\\s*\\d+\\s*/\\s*\\d+")
 
@@ -79,6 +97,7 @@ class Bot(private val svc: AutoService) {
         svc.setStatus("testando")
         Thread {
             try {
+                OcrUtil.warmUp()
                 val c = Cfg.load(svc)
                 cfg = c
                 val r = useItem(kind, c)
@@ -126,6 +145,7 @@ class Bot(private val svc: AutoService) {
     // ================= loop principal =================
 
     private fun loop() {
+        OcrUtil.warmUp()
         Logger.add("Bot iniciado (jogo: " + (if (targetPkg.isEmpty()) "qualquer" else targetPkg) + ")")
         svc.setStatus("ligado")
         while (true) {
@@ -375,21 +395,83 @@ class Bot(private val svc: AutoService) {
 
     // ================= telas =================
 
-    /** Tira uma foto da tela, le o texto e descarta a imagem na hora. */
-    private fun shot(): Screen? {
+    private fun shot(): Screen? = shotAt(null)
+
+    /** Tira uma foto, le o texto (so o retangulo [r], se dado) e descarta a imagem na hora. */
+    private fun shotAt(r: Rect?): Screen? {
         chk()
         val b = CaptureService.instance?.capture()
         if (b == null) {
             Logger.add("Sem imagem da tela (captura nao ativa?)")
             return null
         }
+        val rr = if (r != null && r.right <= b.width && r.bottom <= b.height && r.width() > 8 && r.height() > 8) r else null
         val s = try {
-            OcrUtil.scan(b)
+            if (rr == null) OcrUtil.scan(b) else OcrUtil.scanRegion(b, rr.left, rr.top, rr.right, rr.bottom, 1)
         } finally {
             b.recycle()
         }
-        last = s
+        s.partial = rr != null
+        if (rr == null) last = s
         return s
+    }
+
+    private fun roiFor(keys: List<String>): Rect? {
+        val u = Rect()
+        var first = true
+        for (k in keys) {
+            val r = roi[k] ?: return null
+            if (first) {
+                u.set(r)
+                first = false
+            } else {
+                u.union(r)
+            }
+        }
+        return if (first) null else u
+    }
+
+    private fun learn(key: String, sc: Screen, linePred: (Screen, OLine) -> Boolean) {
+        val hits = sc.lines.filter { linePred(sc, it) }
+        if (hits.isEmpty()) return
+        val u = Rect(hits[0].rect)
+        for (l in hits) u.union(l.rect)
+        val px = (sc.w * 0.05f).toInt()
+        val py = (sc.h * 0.05f).toInt()
+        u.left = maxOf(0, u.left - px)
+        u.top = maxOf(0, u.top - py)
+        u.right = minOf(sc.w, u.right + px)
+        u.bottom = minOf(sc.h, u.bottom + py)
+        roi[key] = u
+    }
+
+    /**
+     * Espera uma etapa aparecer lendo so o retangulo aprendido (bem mais rapido que a tela inteira).
+     * A cada 4 leituras faz uma leitura completa (cobre retangulo desatualizado) e reaprende.
+     * [learnPred] = quais linhas definem o retangulo (null = nao aprender, usado para "sumiu").
+     */
+    private fun waitStep(
+        keys: List<String>, timeout: Long,
+        learnPred: ((Screen, OLine) -> Boolean)?, pred: (Screen) -> Boolean
+    ): Screen? {
+        val t0 = clock()
+        val end = t0 + timeout
+        var n = 0
+        while (clock() < end) {
+            chk()
+            val r = roiFor(keys)
+            val full = r == null || n % 4 == 3
+            val sc = shotAt(if (full) null else r)
+            n++
+            if (sc != null && pred(sc)) {
+                if (full && learnPred != null && keys.size == 1) learn(keys[0], sc, learnPred)
+                Logger.add("t:" + keys.joinToString("+") + " " + (clock() - t0) + "ms " + (if (full) "F" else "R"))
+                return sc
+            }
+            if (poll() > 0) sleepc(poll())
+        }
+        if (keys.size == 1) roi.remove(keys[0])
+        return null
     }
 
     /** Fica lendo a tela e retorna no instante em que [pred] for verdadeiro (ou null no tempo limite). */
@@ -437,7 +519,9 @@ class Bot(private val svc: AutoService) {
 
     private fun cleanState(): Boolean {
         for (i in 0 until 4) {
-            val sc = shot() ?: return false
+            var sc = shotAt(roiFor(dlgKeys)) ?: return false
+            if (!anyDialog(sc)) return true
+            if (sc.partial) sc = shot() ?: return false
             if (!anyDialog(sc)) return true
             closeDialog(sc)
             if (waitFor(1500) { !anyDialog(it) } != null) return true
@@ -477,17 +561,19 @@ class Bot(private val svc: AutoService) {
     private fun openBolsos(): Boolean {
         for (attempt in 1..3) {
             chk()
-            var sc = shot() ?: continue
+            var sc = shotAt(roiFor(kbdKeys)) ?: continue
             if (!keyboardOpen(sc)) {
                 tap(sc.w * 0.30f, sc.h * 0.10f)
-                sc = waitFor(tmo()) { keyboardOpen(it) } ?: continue
+                sc = waitStep(kbdKeys, tmo(), kbdLine) { keyboardOpen(it) } ?: continue
+            } else if (!sc.partial) {
+                learn("kbd", sc, kbdLine)
             }
             if (!sc.has("digite algo")) {
                 for (i in 0 until 14) tapFrac(sc, 0.922f, 0.825f)
             }
             typeText(sc, "/bolsos")
             // espera o texto aparecer no campo (o aviso "digite algo" some)
-            val v = waitFor(1500) { !it.has("digite algo") }
+            val v = waitStep(kbdKeys, 1500, null) { !it.has("digite algo") }
             if (v == null) {
                 Logger.add("Nada foi digitado (teclado nao respondeu). Tentativa $attempt")
                 continue
@@ -553,14 +639,24 @@ class Bot(private val svc: AutoService) {
 
     private fun useItem(kind: Kind, s: Cfg): Res {
         val words = if (kind == Kind.WATER) s.waterWords else s.foodWords
+        val listLine: (Screen, OLine) -> Boolean = { sc, l ->
+            invRe.containsMatchIn(l.norm) || l.norm.contains("ver bolsos") ||
+                (l.norm.contains("selecionar") && l.rect.top > sc.h * 0.4) ||
+                l === findItem(sc, words)
+        }
         if (!cleanState()) return fail("nao consegui limpar a tela (dialogo desconhecido aberto?)")
         if (!openBolsos()) return fail("nao consegui digitar /bolsos")
 
-        var sc = waitFor(tmo()) { isBolsos(it) } ?: return fail("dialogo Bolsos nao abriu")
+        var sc = waitStep(listOf("bolsos"), tmo(), bolsosLine) { isBolsos(it) } ?: return fail("dialogo Bolsos nao abriu")
         press(sc, "selecionar", 0.454f, 0.772f) // "Abrir Mochila" ja vem marcado
 
-        sc = waitFor(tmo()) { isList(it) } ?: return fail("lista da mochila nao abriu")
+        sc = waitStep(listOf("list"), tmo(), listLine) { isList(it) } ?: return fail("lista da mochila nao abriu")
         var item = findItem(sc, words)
+        if (item == null && sc.partial) {
+            // leitura rapida nao viu o item: confirma com a tela inteira antes de rolar
+            sc = shot() ?: return fail("sem imagem da tela")
+            item = findItem(sc, words)
+        }
         var tries = 0
         var sig = signature(sc)
         while (item == null && tries < 6) {
@@ -580,18 +676,18 @@ class Bot(private val svc: AutoService) {
 
         tap(item.rect.exactCenterX(), item.rect.exactCenterY())
         // tocar no item normalmente ja abre o menu: espera aparecer; se nao abrir, usa o botao Selecionar
-        var a = waitFor(s.menuWait) { isActions(it) }
+        var a = waitStep(listOf("actions"), s.menuWait, actionsLine) { isActions(it) }
         if (a == null) {
             val l = shot()
             if (l != null && isList(l)) {
                 press(l, "selecionar", 0.454f, 0.772f)
             }
-            a = waitFor(tmo()) { isActions(it) }
+            a = waitStep(listOf("actions"), tmo(), actionsLine) { isActions(it) }
         }
         if (a == null) return fail("menu do item (Usar Item) nao abriu")
 
         press(a, "selecionar", 0.461f, 0.682f) // "Usar Item" ja vem marcado
-        val done = waitFor(tmo()) { !anyDialog(it) }
+        val done = waitStep(dlgKeys, tmo(), null) { !anyDialog(it) }
         if (done == null) {
             closeAll()
             return fail("menu continuou aberto depois de usar")
