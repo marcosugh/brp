@@ -328,6 +328,26 @@ class Bot(private val svc: AutoService) {
         return percents(sc).size >= 3
     }
 
+    private val xMarks = setOf("x", "X", "\u00d7", "\u2715", "\u2716", "\u2573")
+
+    /**
+     * Posicao estimada do X do anuncio: o anuncio e centralizado e escala pela ALTURA da tela,
+     * entao o X fica a ~0,505 alturas a direita do centro e a ~0,246 alturas do topo.
+     * Tenta tambem posicoes vizinhas a cada tentativa.
+     */
+    private fun closeCand(sc: Screen, i: Int): Pair<Float, Float> {
+        val h = sc.h.toFloat()
+        val w = sc.w.toFloat()
+        val offs = listOf(
+            Pair(0f, 0f), Pair(-0.03f, 0f), Pair(0.03f, 0f), Pair(0f, 0.03f), Pair(0f, -0.03f),
+            Pair(-0.03f, 0.03f), Pair(0.03f, -0.03f), Pair(-0.06f, 0f), Pair(0.06f, 0f)
+        )
+        val o = offs[i % offs.size]
+        val x = (w / 2f + (0.505f + o.first) * h).coerceIn(0f, w - 1f)
+        val y = ((0.246f + o.second) * h).coerceIn(0f, h - 1f)
+        return Pair(x, y)
+    }
+
     private fun hasPopup(sc: Screen) = sc.lines.any { l -> popupWords.any { l.norm.contains(it) } }
 
     /** Abre o jogo de novo, fecha o anuncio, toca em JOGAR e espera a tela do jogo (barras) aparecer. */
@@ -354,10 +374,13 @@ class Bot(private val svc: AutoService) {
             }
             val jogar = sc.lines.firstOrNull { it.norm.trim() == "jogar" }
             if (hasPopup(sc)) {
-                val c = closeCands[closeTry % closeCands.size]
                 closeTry++
-                Logger.add("Anuncio detectado: fechando (tentativa $closeTry)")
-                tap(sc.w * c.first, sc.h * c.second)
+                // 1) se o OCR leu o "X" como texto, toca nele
+                val xl = sc.lines.firstOrNull { it.text.trim() in xMarks && it.rect.top < sc.h * 0.5 }
+                val c = if (xl != null) Pair(xl.rect.exactCenterX(), xl.rect.exactCenterY()) else closeCand(sc, closeTry - 1)
+                Logger.add("Anuncio detectado: fechando (tentativa $closeTry, " + (if (xl != null) "X lido" else "posicao estimada") + ")")
+                if (closeTry == 3) Logger.add("Tela do anuncio: " + sc.dump().take(500))
+                tap(c.first, c.second)
                 waitFor(1500) { !hasPopup(it) }
                 continue
             }
