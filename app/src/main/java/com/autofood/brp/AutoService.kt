@@ -59,6 +59,7 @@ class AutoService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        Logger.init(applicationContext)
         createPanel()
         Logger.add("Acessibilidade conectada")
     }

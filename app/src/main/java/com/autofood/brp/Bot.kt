@@ -155,7 +155,7 @@ class Bot(private val svc: AutoService) {
             if (targetPkg.isNotEmpty() && svc.foregroundPkg != targetPkg) {
                 svc.setStatus("espera")
                 if (offSince == 0L) offSince = clock()
-                if (s.autoReopen && clock() - offSince > 10000 && clock() >= noRecoverUntil) {
+                if (s.autoReopen && clock() - offSince > 20000 && clock() >= noRecoverUntil) {
                     if (recoverGame()) {
                         recoverFails = 0
                     } else {
@@ -641,8 +641,7 @@ class Bot(private val svc: AutoService) {
         val words = if (kind == Kind.WATER) s.waterWords else s.foodWords
         val listLine: (Screen, OLine) -> Boolean = { sc, l ->
             invRe.containsMatchIn(l.norm) || l.norm.contains("ver bolsos") ||
-                (l.norm.contains("selecionar") && l.rect.top > sc.h * 0.4) ||
-                l === findItem(sc, words)
+                (l.norm.contains("selecionar") && l.rect.top > sc.h * 0.4)
         }
         if (!cleanState()) return fail("nao consegui limpar a tela (dialogo desconhecido aberto?)")
         if (!openBolsos()) return fail("nao consegui digitar /bolsos")

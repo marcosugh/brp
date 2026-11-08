@@ -81,6 +81,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Logger.init(applicationContext)
         speedSel = Cfg.prefs(this).getInt("speed", 1).coerceIn(0, 2)
 
         val sv = ScrollView(this)
