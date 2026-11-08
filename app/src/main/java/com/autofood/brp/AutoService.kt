@@ -251,6 +251,23 @@ class AutoService : AccessibilityService() {
         b.alpha = if (disabled) 0.4f else 1f
     }
 
+    /** Fecha o app da frente pelos botoes do celular: apps recentes, desliza o cartao para cima e volta ao inicio. */
+    fun killViaRecents() {
+        try {
+            val m = resources.displayMetrics
+            val w = m.widthPixels.toFloat()
+            val h = m.heightPixels.toFloat()
+            performGlobalAction(GLOBAL_ACTION_RECENTS)
+            Thread.sleep(1200)
+            swipe(w * 0.5f, h * 0.60f, w * 0.5f, h * 0.06f, 250)
+            Thread.sleep(600)
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            Logger.add("App fechado pelos apps recentes")
+        } catch (e: Exception) {
+            Logger.add("Erro ao fechar pelos apps recentes: $e")
+        }
+    }
+
     fun back(): Boolean = performGlobalAction(GLOBAL_ACTION_BACK)
 
     fun home(): Boolean = performGlobalAction(GLOBAL_ACTION_HOME)

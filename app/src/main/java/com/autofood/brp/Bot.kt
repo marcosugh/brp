@@ -405,7 +405,7 @@ class Bot(private val svc: AutoService) {
     // mensagens pre-definidas (ja sem acento e em minusculas). Ajustar com os textos reais do jogo.
     private val serverWords = listOf(
         "reiniciando", "vai reiniciar", "ira reiniciar", "sera reiniciado", "reinicio do servidor",
-        "reiniciar o servidor", "servidor reinici", "restart",
+        "reiniciar o servidor", "servidor reinici", "sendo reiniciado", "feche o aplicativo", "conecte novamente", "restart",
         "conexao perdida", "perdeu a conexao", "perdemos a conexao", "fechou a conexao",
         "conexao com o servidor", "servidor fechou", "servidor offline", "servidor fechado",
         "servidor esta fechado", "nao foi possivel conectar", "falha ao conectar", "desconectado do servidor"
@@ -429,26 +429,50 @@ class Bot(private val svc: AutoService) {
         return serverRestartExit(m)
     }
 
-    /** /q no chat, toca em Sim/OK e deixa o fluxo normal (reabrir e entrar) assumir. */
+    /** O aviso "REINICIANDO..." do servidor (bloqueia o chat ate tocar em OK). */
+    private fun isRestartDialog(sc: Screen) =
+        sc.lines.any { it.norm.contains("feche o aplicativo") || it.norm.contains("sendo reiniciado") }
+
+    /**
+     * Fluxo real do jogo: aviso REINICIANDO (OK) -> /q no chat -> dialogo "Sair do jogo" (CANCELAR / SAIR) -> SAIR.
+     * O jogo fecha e o fluxo normal (reabrir e entrar) assume.
+     */
     private fun serverRestartExit(reason: String): Boolean {
         if (clock() - lastServerExit < 180000) return false
         lastServerExit = clock()
         Logger.add("ALERTA: servidor reiniciando/fora (\"$reason\"): saindo do jogo com /q")
         svc.setStatus("reiniciando")
         stats?.let { it.serverExits++ }
+        // 1) fecha o aviso REINICIANDO, que bloqueia o chat
+        val d0 = shot()
+        if (d0 != null && isRestartDialog(d0)) {
+            val ok = d0.lines.filter { it.norm.trim() == "ok" }.minByOrNull { it.rect.left }
+            if (ok != null) {
+                Logger.add("Fechando o aviso REINICIANDO (OK)")
+                tap(ok.rect.exactCenterX(), ok.rect.exactCenterY())
+                waitFor(2500) { !isRestartDialog(it) }
+            }
+        }
         cleanState()
+        // 2) /q no chat
         if (!typeCommand("/q")) {
-            Logger.add("Nao consegui digitar /q")
-            return false
+            Logger.add("Nao consegui digitar /q: fechando o app pelos botoes do celular")
+            svc.killViaRecents()
+            offSince = clock() - 8000
+            return true
         }
-        val sc = waitFor(tmo()) { s -> s.lines.any { it.norm.trim() == "sim" || it.norm.trim() == "ok" } }
+        // 3) botao SAIR do dialogo "Sair do jogo"
+        val sc = waitFor(tmo()) { s -> s.lines.any { it.norm.trim() == "sair" || it.norm.trim() == "sim" } }
         if (sc == null) {
-            Logger.add("Dialogo do /q nao apareceu | tela: " + last?.dump()?.take(400))
-            return false
+            Logger.add("Dialogo Sair do jogo nao apareceu | tela: " + last?.dump()?.take(400))
+            svc.killViaRecents()
+            offSince = clock() - 8000
+            return true
         }
-        val l = sc.lines.filter { it.norm.trim() == "sim" }.maxByOrNull { it.rect.top }
-            ?: sc.lines.filter { it.norm.trim() == "ok" }.maxByOrNull { it.rect.top }
+        val l = sc.lines.filter { it.norm.trim() == "sair" }.maxByOrNull { it.rect.top }
+            ?: sc.lines.filter { it.norm.trim() == "sim" }.maxByOrNull { it.rect.top }
             ?: return false
+        Logger.add("Tocando em SAIR")
         tap(l.rect.exactCenterX(), l.rect.exactCenterY())
         val end = clock() + 20000
         while (clock() < end && svc.foregroundPkg == targetPkg) sleepc(500)
@@ -590,12 +614,8 @@ class Bot(private val svc: AutoService) {
                 Logger.add("Servidor indisponivel (\"$sm\"): saindo do jogo e tentando de novo")
                 lastDown = clock()
                 svc.setStatus("servidor fora")
-                svc.back()
-                sleepc(500)
-                svc.back()
-                sleepc(500)
-                svc.home()
-                sleepc(20000)
+                svc.killViaRecents() // fecha o app pelos botoes do celular (apps recentes)
+                sleepc(15000)
                 svc.launchGame(pkg)
                 end = clock() + timeoutMs // enquanto o servidor estiver fora, continua tentando
                 jogarTaps = 0
