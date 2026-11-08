@@ -15,6 +15,7 @@ class Stats {
     var alarms = 0
     var reopens = 0
     var reconnects = 0
+    var serverExits = 0
     var useCount = 0
     var useMsTotal = 0L
     var useMsBest = 0L
@@ -45,6 +46,7 @@ class Stats {
         rows.add("Alarmes|$alarms")
         rows.add("Jogo reaberto|$reopens")
         rows.add("Reconexões (/rec)|$reconnects")
+        rows.add("Saídas por reinício do servidor|$serverExits")
         rows.add("Barras no início|" + lv(first))
         rows.add("Barras no fim|" + lv(last))
         val text = rows.joinToString("\n")

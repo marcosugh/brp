@@ -219,7 +219,7 @@ class AutoService : AccessibilityService() {
 
     private fun statusColor(t: String): Int = when {
         t.startsWith("sem") || t.startsWith("erro") -> C_RED
-        t.startsWith("espera") || t.startsWith("parando") || t.startsWith("reabrindo") || t.startsWith("reconectando") -> C_WARN
+        t.startsWith("espera") || t.startsWith("parando") || t.startsWith("reabrindo") || t.startsWith("reconectando") || t.startsWith("reiniciando") || t.startsWith("servidor") -> C_WARN
         t == "ligado" || t == "bebendo" || t == "comendo" -> C_GREEN
         t == "testando" -> C_BLUE
         else -> C_GRAY
@@ -250,6 +250,10 @@ class AutoService : AccessibilityService() {
         b.setTextColor(if (active) Color.WHITE else Color.parseColor("#C9D3DE"))
         b.alpha = if (disabled) 0.4f else 1f
     }
+
+    fun back(): Boolean = performGlobalAction(GLOBAL_ACTION_BACK)
+
+    fun home(): Boolean = performGlobalAction(GLOBAL_ACTION_HOME)
 
     fun toast(t: String) {
         main.post {

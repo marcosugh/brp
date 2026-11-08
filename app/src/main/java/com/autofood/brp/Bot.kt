@@ -257,6 +257,10 @@ class Bot(private val svc: AutoService) {
                 svc.setStatus("sem leitura")
                 if (noReadSince == 0L) noReadSince = clock()
                 val el = clock() - noReadSince
+                if (el > 4000 && s.autoServer && serverCheck()) {
+                    noReadSince = 0L
+                    continue
+                }
                 if (el > 20000 && s.autoReopen && targetPkg.isNotEmpty()) {
                     // sem barras ha um tempo: pode ter voltado ao lobby (ex.: depois de reconectar) ou ter um anuncio
                     val sc = shot()
@@ -275,6 +279,7 @@ class Bot(private val svc: AutoService) {
                 continue
             }
             noReadSince = 0L
+            if (s.autoServer && serverCheck()) continue
             stats?.let { if (it.first == null) it.first = lv; it.last = lv }
             svc.setStatus("ligado")
             val now = clock()
@@ -395,6 +400,62 @@ class Bot(private val svc: AutoService) {
         return v
     }
 
+    // ================= servidor reiniciando =================
+
+    // mensagens pre-definidas (ja sem acento e em minusculas). Ajustar com os textos reais do jogo.
+    private val serverWords = listOf(
+        "reiniciando", "vai reiniciar", "ira reiniciar", "sera reiniciado", "reinicio do servidor",
+        "reiniciar o servidor", "servidor reinici", "restart",
+        "conexao perdida", "perdeu a conexao", "perdemos a conexao", "fechou a conexao",
+        "conexao com o servidor", "servidor fechou", "servidor offline", "servidor fechado",
+        "servidor esta fechado", "nao foi possivel conectar", "falha ao conectar", "desconectado do servidor"
+    )
+    private var lastServerExit = 0L
+
+    private fun serverMsg(sc: Screen): String? {
+        for (l in sc.lines) {
+            for (w in serverWords) if (l.norm.contains(w)) return l.text
+        }
+        return null
+    }
+
+    /** Ve uma mensagem de reinicio/queda do servidor em 2 leituras seguidas e, se confirmar, sai do jogo com /q. */
+    private fun serverCheck(): Boolean {
+        val a = shot() ?: return false
+        if (serverMsg(a) == null) return false
+        sleepc(2000)
+        val b = shot() ?: return false
+        val m = serverMsg(b) ?: return false
+        return serverRestartExit(m)
+    }
+
+    /** /q no chat, toca em Sim/OK e deixa o fluxo normal (reabrir e entrar) assumir. */
+    private fun serverRestartExit(reason: String): Boolean {
+        if (clock() - lastServerExit < 180000) return false
+        lastServerExit = clock()
+        Logger.add("ALERTA: servidor reiniciando/fora (\"$reason\"): saindo do jogo com /q")
+        svc.setStatus("reiniciando")
+        stats?.let { it.serverExits++ }
+        cleanState()
+        if (!typeCommand("/q")) {
+            Logger.add("Nao consegui digitar /q")
+            return false
+        }
+        val sc = waitFor(tmo()) { s -> s.lines.any { it.norm.trim() == "sim" || it.norm.trim() == "ok" } }
+        if (sc == null) {
+            Logger.add("Dialogo do /q nao apareceu | tela: " + last?.dump()?.take(400))
+            return false
+        }
+        val l = sc.lines.filter { it.norm.trim() == "sim" }.maxByOrNull { it.rect.top }
+            ?: sc.lines.filter { it.norm.trim() == "ok" }.maxByOrNull { it.rect.top }
+            ?: return false
+        tap(l.rect.exactCenterX(), l.rect.exactCenterY())
+        val end = clock() + 20000
+        while (clock() < end && svc.foregroundPkg == targetPkg) sleepc(500)
+        offSince = clock() - 8000 // reabre ja, sem esperar a carencia
+        return true
+    }
+
     // ================= reconectar (/rec) =================
 
     private var lastReconnect = 0L
@@ -511,7 +572,8 @@ class Bot(private val svc: AutoService) {
     }
 
     private fun enterGameLoop(pkg: String, timeoutMs: Long): Boolean {
-        val end = clock() + timeoutMs
+        var end = clock() + timeoutMs
+        var lastDown = 0L
         var closeTry = 0
         var lastJogar = 0L
         var jogarTaps = 0
@@ -521,6 +583,22 @@ class Bot(private val svc: AutoService) {
             val sc = shot()
             if (sc == null) {
                 sleepc(500)
+                continue
+            }
+            val sm = serverMsg(sc)
+            if (sm != null && clock() - lastDown > 30000) {
+                Logger.add("Servidor indisponivel (\"$sm\"): saindo do jogo e tentando de novo")
+                lastDown = clock()
+                svc.setStatus("servidor fora")
+                svc.back()
+                sleepc(500)
+                svc.back()
+                sleepc(500)
+                svc.home()
+                sleepc(20000)
+                svc.launchGame(pkg)
+                end = clock() + timeoutMs // enquanto o servidor estiver fora, continua tentando
+                jogarTaps = 0
                 continue
             }
             val jogar = sc.lines.firstOrNull { it.norm.trim() == "jogar" }

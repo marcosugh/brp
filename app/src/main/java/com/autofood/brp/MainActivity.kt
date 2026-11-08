@@ -219,6 +219,7 @@ class MainActivity : Activity() {
         numRow(o, "interval", "Verificar a cada (segundos)", 15)
         check(o, "auto_reopen", "Reabrir o jogo sozinho se ele fechar", true)
         check(o, "auto_reconnect", "Reconectar sozinho (/rec) se os diálogos não abrirem", true)
+        check(o, "auto_server", "Sair e entrar de novo se o servidor reiniciar", true)
 
         primary(root, "Salvar") {
             save()
