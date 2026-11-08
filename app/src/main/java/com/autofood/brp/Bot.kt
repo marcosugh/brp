@@ -438,7 +438,7 @@ class Bot(private val svc: AutoService) {
      * O jogo fecha e o fluxo normal (reabrir e entrar) assume.
      */
     private fun serverRestartExit(reason: String): Boolean {
-        if (clock() - lastServerExit < 180000) return false
+        if (clock() - lastServerExit < 90000) return false
         lastServerExit = clock()
         Logger.add("ALERTA: servidor reiniciando/fora (\"$reason\"): saindo do jogo com /q")
         svc.setStatus("reiniciando")
@@ -457,7 +457,7 @@ class Bot(private val svc: AutoService) {
         // 2) /q no chat
         if (!typeCommand("/q")) {
             Logger.add("Nao consegui digitar /q: fechando o app pelos botoes do celular")
-            svc.killViaRecents()
+            svc.closeGame(targetPkg)
             offSince = clock() - 8000
             return true
         }
@@ -465,7 +465,7 @@ class Bot(private val svc: AutoService) {
         val sc = waitFor(tmo()) { s -> s.lines.any { it.norm.trim() == "sair" || it.norm.trim() == "sim" } }
         if (sc == null) {
             Logger.add("Dialogo Sair do jogo nao apareceu | tela: " + last?.dump()?.take(400))
-            svc.killViaRecents()
+            svc.closeGame(targetPkg)
             offSince = clock() - 8000
             return true
         }
@@ -598,12 +598,33 @@ class Bot(private val svc: AutoService) {
     private fun enterGameLoop(pkg: String, timeoutMs: Long): Boolean {
         var end = clock() + timeoutMs
         var lastDown = 0L
+        var attempt = 1
+        var attemptStart = clock()
+        var attemptEnd = attemptStart + 90000
         var closeTry = 0
         var lastJogar = 0L
         var jogarTaps = 0
         val tried = ArrayList<Pair<Float, Float>>()
         while (clock() < end) {
             chk()
+            // nao entrou no servidor a tempo (servidor fechado, conexao caiu, jogo saiu): fecha por completo e tenta de novo
+            if (clock() > attemptEnd || (svc.foregroundPkg != pkg && clock() - attemptStart > 25000)) {
+                Logger.add("Nao entrou no servidor (tentativa $attempt): fechando o jogo por completo e tentando de novo")
+                attempt++
+                svc.setStatus("servidor fora")
+                if (attempt == 6 || attempt == 16 || attempt == 31) alarm()
+                svc.closeGame(pkg)
+                sleepc(10000)
+                svc.launchGame(pkg)
+                attemptStart = clock()
+                attemptEnd = attemptStart + 90000
+                end = attemptEnd + timeoutMs
+                jogarTaps = 0
+                closeTry = 0
+                lastJogar = 0L
+                tried.clear()
+                continue
+            }
             val sc = shot()
             if (sc == null) {
                 sleepc(500)
@@ -614,9 +635,11 @@ class Bot(private val svc: AutoService) {
                 Logger.add("Servidor indisponivel (\"$sm\"): saindo do jogo e tentando de novo")
                 lastDown = clock()
                 svc.setStatus("servidor fora")
-                svc.killViaRecents() // fecha o app pelos botoes do celular (apps recentes)
-                sleepc(15000)
+                svc.closeGame(pkg)
+                sleepc(10000)
                 svc.launchGame(pkg)
+                attemptStart = clock()
+                attemptEnd = attemptStart + 90000
                 end = clock() + timeoutMs // enquanto o servidor estiver fora, continua tentando
                 jogarTaps = 0
                 continue

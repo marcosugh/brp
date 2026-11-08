@@ -251,6 +251,26 @@ class AutoService : AccessibilityService() {
         b.alpha = if (disabled) 0.4f else 1f
     }
 
+    /**
+     * Fecha o jogo POR COMPLETO: vai para o inicio (o jogo fica em segundo plano), encerra o processo dele
+     * e tira o cartao dos apps recentes. Na proxima abertura o jogo comeca do zero.
+     */
+    fun closeGame(pkg: String) {
+        try {
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            Thread.sleep(1200)
+            try {
+                val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                am.killBackgroundProcesses(pkg)
+                Logger.add("Processo do jogo encerrado")
+            } catch (e: Exception) {
+                Logger.add("Nao consegui encerrar o processo: $e")
+            }
+            Thread.sleep(800)
+        } catch (e: Exception) { }
+        killViaRecents()
+    }
+
     /** Fecha o app da frente pelos botoes do celular: apps recentes, desliza o cartao para cima e volta ao inicio. */
     fun killViaRecents() {
         try {
