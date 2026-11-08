@@ -2,6 +2,8 @@ name: Build APK
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,3 +21,14 @@ jobs:
         with:
           name: AutoFood-APK
           path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publicar Release com numero de versao
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          N=${{ github.run_number }}
+          cp app/build/outputs/apk/debug/app-debug.apk "AutoFood-v$N.apk"
+          gh release create "v$N" "AutoFood-v$N.apk" \
+            --target "${{ github.sha }}" \
+            --title "AutoFood BRP v$N" \
+            --notes "Build $N da branch ${{ github.ref_name }}. Baixe o arquivo AutoFood-v$N.apk e instale." \
+            --prerelease
