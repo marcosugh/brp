@@ -412,11 +412,30 @@ class Bot(private val svc: AutoService) {
     )
     private var lastServerExit = 0L
 
+    private val staleMsgs = HashSet<String>()
+    private var staleUntil = 0L
+
     private fun serverMsg(sc: Screen): String? {
+        val useStale = clock() < staleUntil
         for (l in sc.lines) {
-            for (w in serverWords) if (l.norm.contains(w)) return l.text
+            for (w in serverWords) {
+                if (l.norm.contains(w)) {
+                    if (useStale && l.norm in staleMsgs) continue
+                    return l.text
+                }
+            }
         }
         return null
+    }
+
+    /** Guarda as mensagens que ja estao no chat, para elas nao dispararem outra recuperacao depois de reconectar. */
+    private fun markStale() {
+        val sc = shot() ?: return
+        staleMsgs.clear()
+        for (l in sc.lines) {
+            for (w in serverWords) if (l.norm.contains(w)) staleMsgs.add(l.norm)
+        }
+        staleUntil = clock() + 600000
     }
 
     /** Ve uma mensagem de reinicio/queda do servidor em 2 leituras seguidas e, se confirmar, sai do jogo com /q. */
@@ -426,7 +445,46 @@ class Bot(private val svc: AutoService) {
         sleepc(2000)
         val b = shot() ?: return false
         val m = serverMsg(b) ?: return false
-        return serverRestartExit(m)
+        return serverRecover(m)
+    }
+
+    /** Fecha o aviso REINICIANDO (OK), que bloqueia o chat. */
+    private fun dismissRestartDialog() {
+        val d0 = shot() ?: return
+        if (!isRestartDialog(d0)) return
+        val ok = d0.lines.filter { it.norm.trim() == "ok" }.minByOrNull { it.rect.left } ?: return
+        Logger.add("Fechando o aviso REINICIANDO (OK)")
+        tap(ok.rect.exactCenterX(), ok.rect.exactCenterY())
+        waitFor(2500) { !isRestartDialog(it) }
+    }
+
+    /**
+     * Servidor reiniciando: fecha o aviso e fica digitando /rec e tocando em Reconectar ate as barras voltarem.
+     * So se nao conseguir depois de varias tentativas usa o plano B (/q + fechar o jogo por completo).
+     */
+    private fun serverRecover(reason: String): Boolean {
+        Logger.add("ALERTA: servidor reiniciando/fora (\"$reason\"): reconectando com /rec")
+        svc.setStatus("reconectando")
+        stats?.let { it.serverExits++ }
+        dismissRestartDialog()
+        var tries = 0
+        while (tries < 15) {
+            chk()
+            if (gameLost()) return false // o jogo saiu da tela: o laco principal reabre
+            tries++
+            if (reconnectOnce(45000)) {
+                Logger.add("Reconectado ao servidor (tentativa $tries)")
+                markStale()
+                svc.setStatus("ligado")
+                return true
+            }
+            Logger.add("Ainda sem servidor (tentativa $tries de 15): nova tentativa de /rec em 20s")
+            svc.setStatus("servidor fora")
+            sleepc(20000)
+            dismissRestartDialog()
+        }
+        Logger.add("ALERTA: /rec nao funcionou em 15 tentativas: saindo do jogo e entrando de novo")
+        return serverRestartExit(reason)
     }
 
     /** O aviso "REINICIANDO..." do servidor (bloqueia o chat ate tocar em OK). */
@@ -484,12 +542,25 @@ class Bot(private val svc: AutoService) {
 
     private var lastReconnect = 0L
 
-    /** Se os dialogos nao abrem: digita /rec, toca em Reconectar e espera o jogo voltar. No maximo 1 vez a cada 2 min. */
+    /** Se os dialogos nao abrem: /rec + Reconectar. No maximo 1 vez a cada 2 min. */
     private fun tryReconnect(): Boolean {
         if (clock() - lastReconnect < 120000) return false
         lastReconnect = clock()
         Logger.add("Dialogos nao abrem: tentando /rec")
         svc.setStatus("reconectando")
+        val ok = reconnectOnce(90000)
+        if (ok) {
+            Logger.add("Reconectado: continuando")
+            svc.setStatus("ligado")
+        }
+        return ok
+    }
+
+    /**
+     * Digita /rec, toca em Reconectar e confirma que o jogo realmente reconectou: as barras somem
+     * (tela de conexao) e voltam. Sem isso, as barras congeladas do jogo desconectado enganariam a checagem.
+     */
+    private fun reconnectOnce(waitHudMs: Long): Boolean {
         cleanState()
         if (!typeCommand("/rec")) return false
         val sc = waitFor(tmo()) { it.has("reconectar") }
@@ -500,17 +571,30 @@ class Bot(private val svc: AutoService) {
         val l = sc.lines.filter { it.norm.contains("reconectar") }.maxByOrNull { it.rect.top } ?: return false
         tap(l.rect.exactCenterX(), l.rect.exactCenterY())
         stats?.let { it.reconnects++ }
-        val end = clock() + 90000
+        // fase 1: o jogo cai para a tela de conexao (as barras somem)
+        var gone = false
+        val t1 = clock() + 20000
+        while (clock() < t1) {
+            chk()
+            if (!hudVisible()) {
+                gone = true
+                break
+            }
+            sleepc(500)
+        }
+        // fase 2: espera as barras voltarem
+        val end = clock() + waitHudMs
         while (clock() < end) {
             chk()
             if (hudVisible()) {
-                Logger.add("Reconectado: continuando")
-                svc.setStatus("ligado")
-                return true
+                if (gone) return true
+                // as barras nunca sumiram: so vale se nao ha mais aviso de servidor na tela
+                val s2 = shot()
+                return s2 != null && serverMsg(s2) == null
             }
             sleepc(1000)
         }
-        Logger.add("Reconectar nao voltou ao jogo em 90s")
+        Logger.add("Reconectar nao voltou ao jogo")
         return false
     }
 
